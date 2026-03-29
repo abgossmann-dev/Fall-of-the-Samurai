@@ -1,266 +1,347 @@
-# Workout Tracker Dashboard — V1 Product Spec (Single-User MVP)
+# Workout Tracker V1 — Implementation Pack
 
-## 1) MVP Feature Set
-
-### In scope (V1)
-- **Single-user accountless/local-first experience** (one athlete: you).
-- **Dashboard home screen** with:
-  - This week completion snapshot.
-  - Next planned workout.
-  - Last session summary.
-  - Quick links (Log Workout, Templates, History, PRs).
-- **Workout template builder** (desktop-first editing UX):
-  - Create/edit template name, training day, goal.
-  - Add/reorder exercises.
-  - Define set schema per exercise (sets/reps/target load/RPE/rest).
-  - Save as reusable template.
-- **Workout logging screen** (mobile-first):
-  - Large tap targets, sticky save bar, thumb-friendly controls.
-  - One-tap set completion.
-  - Quick +/− adjustments for reps/load.
-  - Notes at workout and exercise level.
-  - Timer/rest helper (basic).
-- **Exercise history + progress charts**:
-  - Per-exercise trend (load, reps, estimated 1RM, volume).
-  - Session list with filters.
-- **Weekly completion view**:
-  - Calendar/week grid of planned vs completed workouts.
-  - Completion % for current and past weeks.
-- **PR tracking**:
-  - Auto-detect new bests (top set load, estimated 1RM, volume PR).
-  - Dedicated PR list with date + linked workout.
-- **Bodyweight tracking**:
-  - Manual daily/weekly entries.
-  - Trend line with 7-day moving average.
-- **Duplicate last week’s workouts**:
-  - One-click action from weekly view to copy prior week plan.
-
-### Explicitly out of scope (for now)
-- Team/coach/athlete management.
-- Social features, comments, messaging.
-- Wearable integrations.
-- Complex periodization engine.
-- Nutrition tracking beyond bodyweight notes.
-- Offline conflict sync across many devices (basic local persistence only).
+This document converts the original MVP spec into four build-ready artifacts:
+1) Simple database schema
+2) Page-by-page wireframes
+3) Prioritized build order
+4) Codex prompt that starts frontend-only
 
 ---
 
-## 2) Product Spec
+## 1) Simple Database Schema (V1)
 
-### Product goal
-Build a fast, mobile-first web app that makes logging workouts feel like an app (not a spreadsheet), while keeping template planning efficient on desktop.
+> Goal: Keep schema minimal, single-user, and easy to evolve.
 
-### Primary user
-- **You**, a single self-coached athlete.
-- Uses desktop for planning and phone (iPhone) during sessions.
+```sql
+-- Single-user assumption: no users table required for V1.
 
-### Success criteria (first 4–6 weeks)
-- Log a full workout in < 90 seconds setup + in-session taps.
-- Complete > 95% of workout entries without switching to spreadsheet.
-- Open logging page on iPhone in < 2 seconds on repeat visits.
-- Duplicate next week plan in < 10 seconds.
+CREATE TABLE workout_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  day_tag TEXT,              -- e.g. Mon, Push, Lower
+  goal TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-### Core user flows
-1. **Build template on desktop**
-   - Create template → add exercises/sets → save.
-2. **Start workout on phone**
-   - Tap "Log Workout" → choose today’s template → start session.
-3. **Log sets quickly**
-   - Tap set complete, adjust load/reps, add notes as needed.
-4. **Finish + review**
-   - End workout → summary + PR detection.
-5. **Review progress weekly**
-   - View completion, PRs, bodyweight trend.
-6. **Duplicate last week**
-   - Weekly view action copies templates/sessions into next week.
+CREATE TABLE template_exercises (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL REFERENCES workout_templates(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL,
+  exercise_name TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-### Data model (V1)
-- **Template**
-  - id, name, dayTag, goal, createdAt, updatedAt
-- **TemplateExercise**
-  - id, templateId, order, exerciseName, defaultNotes
-- **TemplateSet**
-  - id, templateExerciseId, setIndex, targetReps, targetLoad, targetRPE, restSec
-- **WorkoutSession**
-  - id, templateId (nullable), date, startedAt, endedAt, workoutNotes, status
-- **SessionExercise**
-  - id, sessionId, exerciseName, order, exerciseNotes
-- **SessionSet**
-  - id, sessionExerciseId, setIndex, reps, load, rpe, completedAt, isPRFlag
-- **BodyweightEntry**
-  - id, date, weight, note
-- **PRRecord**
-  - id, exerciseName, prType, value, date, sessionId
+CREATE TABLE template_sets (
+  id TEXT PRIMARY KEY,
+  template_exercise_id TEXT NOT NULL REFERENCES template_exercises(id) ON DELETE CASCADE,
+  set_index INTEGER NOT NULL,
+  target_reps INTEGER,
+  target_load REAL,
+  target_rpe REAL,
+  rest_seconds INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-### Functional requirements
-- Create/edit/delete templates.
-- Reorder exercises and sets.
-- Start session from template or blank session.
-- Autosave logging entries after every meaningful change.
-- Mark sets complete/incomplete quickly.
-- Add notes at workout and exercise levels.
-- Detect PRs when workout ends (and optionally live after each set).
-- Show exercise history chart and session table.
-- Show weekly completion metrics + duplicate last week action.
-- Add/edit bodyweight entries and show trend.
+CREATE TABLE workout_sessions (
+  id TEXT PRIMARY KEY,
+  template_id TEXT REFERENCES workout_templates(id) ON DELETE SET NULL,
+  session_date TEXT NOT NULL, -- YYYY-MM-DD
+  status TEXT NOT NULL DEFAULT 'in_progress', -- in_progress | completed | skipped
+  started_at TEXT,
+  ended_at TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-### Non-functional requirements
-- **Performance**: first interactive paint on mobile target < 2.5s; route transitions < 200ms perceived.
-- **Responsiveness**: mobile-first layouts, but usable desktop builder.
-- **Reliability**: no data loss during logging (autosave + local persistence).
-- **Accessibility**: large hit areas (>=44px), sufficient contrast, keyboard support on desktop.
-- **Privacy**: personal-only data, no external sharing by default.
+CREATE TABLE session_exercises (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES workout_sessions(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL,
+  exercise_name TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-### UX principles
-- One primary action per screen.
-- Logging should require minimal typing.
-- Big numeric inputs and steppers over freeform text.
-- Show just enough context (last set, target set, rest countdown).
-- Clean "athletic dashboard" visual language: high contrast cards, concise metrics, strong typography.
+CREATE TABLE session_sets (
+  id TEXT PRIMARY KEY,
+  session_exercise_id TEXT NOT NULL REFERENCES session_exercises(id) ON DELETE CASCADE,
+  set_index INTEGER NOT NULL,
+  reps INTEGER,
+  load REAL,
+  rpe REAL,
+  completed INTEGER NOT NULL DEFAULT 0, -- 0/1 boolean
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
-### Risks and mitigations
-- **Risk**: Logging friction from too many fields.
-  - **Mitigation**: progressive disclosure; hide advanced fields by default.
-- **Risk**: Data inconsistency between template and session copies.
-  - **Mitigation**: snapshot template into session at start.
-- **Risk**: iPhone performance degradation with heavy charts.
-  - **Mitigation**: lightweight chart library + virtualized history lists.
+CREATE TABLE pr_records (
+  id TEXT PRIMARY KEY,
+  exercise_name TEXT NOT NULL,
+  pr_type TEXT NOT NULL, -- max_load | est_1rm | session_volume
+  value REAL NOT NULL,
+  achieved_on TEXT NOT NULL, -- YYYY-MM-DD
+  session_id TEXT REFERENCES workout_sessions(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
 
-### Delivery plan
-- **Phase 1 (week 1):** data schema + template CRUD + dashboard shell.
-- **Phase 2 (week 2):** mobile logging flow + autosave + notes.
-- **Phase 3 (week 3):** charts, PR engine, weekly completion, bodyweight.
-- **Phase 4 (week 4):** polish, QA, PWA installability, performance pass.
+CREATE TABLE bodyweight_entries (
+  id TEXT PRIMARY KEY,
+  entry_date TEXT NOT NULL, -- YYYY-MM-DD
+  weight REAL NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
----
+-- Helpful indexes
+CREATE INDEX idx_template_exercises_template_id ON template_exercises(template_id);
+CREATE INDEX idx_template_sets_template_exercise_id ON template_sets(template_exercise_id);
+CREATE INDEX idx_sessions_date ON workout_sessions(session_date);
+CREATE INDEX idx_session_exercises_session_id ON session_exercises(session_id);
+CREATE INDEX idx_session_sets_session_exercise_id ON session_sets(session_exercise_id);
+CREATE INDEX idx_pr_exercise_date ON pr_records(exercise_name, achieved_on DESC);
+CREATE INDEX idx_bodyweight_date ON bodyweight_entries(entry_date DESC);
+```
 
-## 3) Proposed Pages / Screens
-
-1. **Dashboard (`/`)**
-   - Weekly completion card
-   - Next workout card
-   - Recent PRs card
-   - Bodyweight mini trend
-   - CTA buttons: Start Workout, Templates, History
-
-2. **Templates List (`/templates`)**
-   - Template cards by day or goal
-   - Create new template
-   - Duplicate template
-
-3. **Template Builder (`/templates/:id`)**
-   - Desktop-optimized editor
-   - Exercise reorder (drag/handle)
-   - Set rows with quick presets (3x5, 4x8, etc.)
-
-4. **Start Workout (`/log/start`)**
-   - Pick today template or blank workout
-   - Optional quick bodyweight entry
-
-5. **Active Workout Logger (`/log/:sessionId`)**
-   - Exercise accordion or cards
-   - Large set rows and complete toggles
-   - +/− steppers for reps/load
-   - Workout notes + exercise notes
-   - Sticky bottom: Save/Finish
-
-6. **Workout Summary (`/log/:sessionId/summary`)**
-   - Session totals (volume, duration)
-   - New PR highlights
-   - Quick "repeat this template" shortcut
-
-7. **Exercise History (`/history`)**
-   - Filter by exercise
-   - Trend chart + session table
-   - PR markers on chart
-
-8. **Weekly View (`/week`)**
-   - Week calendar/list
-   - Planned vs completed
-   - Duplicate last week button
-
-9. **PR Center (`/prs`)**
-   - PR feed by exercise and type
-   - Drill into related session
-
-10. **Bodyweight (`/bodyweight`)**
-    - Entry list + add entry
-    - Weight trend + moving average
+### Notes on behavior
+- When starting a workout from template, copy template exercises/sets into `session_exercises`/`session_sets`.
+- Weekly completion = completed sessions / planned sessions in a 7-day window.
+- “Duplicate last week” creates new planned sessions based on prior week templates.
 
 ---
 
-## 4) Best Tech Stack (for your use case)
+## 2) Page-by-Page Wireframes (Low-Fidelity)
 
-### Recommended stack
-- **Frontend/App**: Next.js (App Router) + TypeScript.
-- **UI**: Tailwind CSS + shadcn/ui primitives.
-- **State/data**: TanStack Query + Zustand (UI/session state).
-- **Database**: SQLite with Prisma (or Drizzle) for simple single-user persistence.
-- **Auth**: None for V1 (single local user assumption).
-- **Charts**: Recharts (or lightweight alternative like uPlot if needed for performance).
-- **Forms**: React Hook Form + Zod validation.
-- **PWA**: next-pwa (or native service worker setup) for installable app-like behavior.
-- **Deployment**: Vercel (easy), or Fly.io/Render if you want persistent file volume control.
+## A. Dashboard (`/`)
 
-### Why this stack
-- Fast iteration and strong DX.
-- Excellent mobile web performance potential.
-- Easy responsive component model for desktop builder + mobile logger.
-- Prisma + SQLite keeps setup simple and low-maintenance for personal use.
+```
++------------------------------------------------+
+| Header: Week of Mar 23–29         [Settings]   |
++------------------------------------------------+
+| Completion Card                                  |
+| 4 / 5 workouts completed        80%             |
++------------------------------------------------+
+| Next Workout                                     |
+| Upper Strength (Today 6:00 PM)   [Start]        |
++------------------------------------------------+
+| PR Highlights (last 7 days)                      |
+| Bench Press +5 lb   Deadlift est1RM +8 lb       |
++------------------------------------------------+
+| Bodyweight Trend (mini chart)                    |
++------------------------------------------------+
+| [Start Workout] [Templates] [History] [Week]    |
++------------------------------------------------+
+```
 
-### Alternative if you want super-minimal backend ops
-- Next.js + Supabase (Postgres + auth/storage, though auth can remain trivial).
-- Good if you later expand to multi-device robust sync.
+## B. Templates List (`/templates`)
+
+```
++------------------------------------------------+
+| Templates                          [+ New]      |
++------------------------------------------------+
+| Push Day          6 exercises      [Edit]       |
+| Pull Day          5 exercises      [Edit]       |
+| Lower Day         7 exercises      [Edit]       |
++------------------------------------------------+
+```
+
+## C. Template Builder (`/templates/:id`) — desktop-friendly
+
+```
++---------------------------------------------------------------+
+| Template: Push Day                      [Save] [Duplicate]    |
++---------------------------------------------------------------+
+| Exercise 1: Bench Press                               [Move]  |
+|  Set 1  reps: 5  load: 185  rpe: 8  rest:120                 |
+|  Set 2  reps: 5  load: 185  rpe: 8  rest:120                 |
+|  [+ Add Set]                                                 |
++---------------------------------------------------------------+
+| Exercise 2: Incline DB Press                          [Move]  |
+| ...                                                         |
++---------------------------------------------------------------+
+| [+ Add Exercise]                                             |
++---------------------------------------------------------------+
+```
+
+## D. Start Workout (`/log/start`)
+
+```
++------------------------------------------------+
+| Start Workout                                   |
++------------------------------------------------+
+| Select Template                                 |
+| ( ) Push Day                                    |
+| ( ) Pull Day                                    |
+| ( ) Blank Workout                               |
++------------------------------------------------+
+| Bodyweight (optional): [ 181.2 ]                |
++------------------------------------------------+
+|                 [Start Session]                 |
++------------------------------------------------+
+```
+
+## E. Active Logger (`/log/:sessionId`) — mobile-first
+
+```
++----------------------------------------------+
+| Push Day                           42:10     |
++----------------------------------------------+
+| Bench Press                                     
+| Last: 185 x 5                                   
+| [✓] Set1  reps [-]5[+]  load [-]185[+]         
+| [ ] Set2  reps [-]5[+]  load [-]185[+]         
+| [ ] Set3  reps [-]5[+]  load [-]185[+]         
+| Notes: [..............................]         
++----------------------------------------------+
+| Incline DB Press ...                           |
++----------------------------------------------+
+| Workout Notes: [..........................]    |
++----------------------------------------------+
+| [Save Draft]                    [Finish]      |  <- sticky
++----------------------------------------------+
+```
+
+## F. Workout Summary (`/log/:sessionId/summary`)
+
+```
++------------------------------------------------+
+| Workout Complete ✅                             |
++------------------------------------------------+
+| Duration: 58m    Volume: 12,430 lb             |
+| New PRs: 2                                     |
+| - Bench Press max load +5 lb                   |
+| - Row volume PR +420 lb                        |
++------------------------------------------------+
+| [View History] [Back to Dashboard]             |
++------------------------------------------------+
+```
+
+## G. History (`/history`)
+
+```
++------------------------------------------------+
+| History                                         |
++------------------------------------------------+
+| Exercise: [Bench Press v]  Range: [12 weeks v] |
++------------------------------------------------+
+| (Line Chart: load / est1RM / volume)           |
++------------------------------------------------+
+| Mar 27   185 x 5 x 3   est1RM 216              |
+| Mar 20   180 x 5 x 3   est1RM 210              |
++------------------------------------------------+
+```
+
+## H. Weekly Completion (`/week`)
+
+```
++------------------------------------------------+
+| Week View                      [Dup Last Week] |
++------------------------------------------------+
+| Mon  Push     ✅                                |
+| Tue  Pull     ✅                                |
+| Wed  Rest     -                                 |
+| Thu  Lower    ⬜ planned                         |
+| Fri  Upper    ⬜ planned                         |
++------------------------------------------------+
+| Completion: 2 / 4 (50%)                        |
++------------------------------------------------+
+```
+
+## I. PR Center (`/prs`)
+
+```
++------------------------------------------------+
+| PR Center                                       |
++------------------------------------------------+
+| Bench Press | max_load    | 190 lb | Mar 27    |
+| Deadlift    | est_1rm     | 405 lb | Mar 22    |
+| Pull-up     | session_vol | 5200   | Mar 18    |
++------------------------------------------------+
+```
+
+## J. Bodyweight (`/bodyweight`)
+
+```
++------------------------------------------------+
+| Bodyweight                                      |
++------------------------------------------------+
+| Today: [181.2] [Add]                           |
++------------------------------------------------+
+| (Trend chart + 7-day moving average)           |
++------------------------------------------------+
+| Mar 29  181.2                                  |
+| Mar 28  181.8                                  |
++------------------------------------------------+
+```
 
 ---
 
-## 5) Single Codex Build Prompt (copy/paste)
+## 3) Prioritized Build Order
+
+### Phase 0 — Project setup (Day 1)
+1. Initialize app shell, design tokens, responsive layout primitives.
+2. Define schema + migrations + seed data.
+3. Create base components (cards, buttons, inputs, bottom action bar).
+
+### Phase 1 — Frontend-only prototype (Days 1–3)
+1. Build all routes/screens with mocked local JSON data.
+2. Implement mobile logging interactions (tap targets, +/- steppers, sticky footer).
+3. Build template builder UI interactions (add/reorder sets/exercises).
+4. Add low-fi charts with mock series.
+5. Add navigation + empty/loading/error visual states.
+
+**Exit criteria:** Clickable end-to-end demo with no backend required.
+
+### Phase 2 — Data layer + CRUD (Days 4–6)
+1. Connect templates CRUD to DB.
+2. Start session from template snapshot.
+3. Persist logging edits with autosave.
+4. Persist notes + bodyweight entries.
+
+### Phase 3 — Intelligence features (Days 7–8)
+1. PR detection logic (max load, est1RM, session volume).
+2. Weekly completion calculations.
+3. Duplicate last week action.
+
+### Phase 4 — Hardening (Days 9–10)
+1. Unit tests for PR + weekly completion logic.
+2. Basic E2E: create template → log workout → observe PR.
+3. Performance pass for iPhone (bundle + render optimizations).
+4. PWA installability and offline cache essentials.
+
+---
+
+## 4) Codex Prompt (Frontend-Only First)
 
 ```text
-Build a production-quality Version 1 of a mobile-first browser workout tracker/dashboard for a single user.
+Build Version 1 of a mobile-first browser-based workout tracker/dashboard for a single user.
 
-Product intent:
-- Feels like a clean athletic dashboard (inspired by TRAQ style), much simpler.
-- Better UX than Excel mobile.
-- Desktop-friendly template building, iPhone-friendly workout logging.
+IMPORTANT DELIVERY ORDER:
+1) First deliver a frontend-only prototype using mock data and local state.
+2) Then (in a second pass) wire the same UI to a real database and APIs.
+Do not start with backend-first architecture.
 
-Tech requirements:
-- Next.js (latest stable) + TypeScript + App Router
+Product goals:
+- Clean, modern, athletic dashboard feel (simpler than TRAQ)
+- Better UX than spreadsheet logging
+- Desktop-friendly template building, iPhone-friendly workout logging
+- Very low-friction in-workout data entry
+
+Tech stack:
+- Next.js + TypeScript + App Router
 - Tailwind CSS + shadcn/ui
-- Prisma + SQLite
-- TanStack Query
-- React Hook Form + Zod
-- Recharts for charts
-- PWA install support
+- Recharts
+- (Second pass) Prisma + SQLite
 
-Core V1 features to implement:
-1) Dashboard home
-2) Workout template builder
-3) Mobile workout logging screen with large tap targets
-4) Exercise history/progress charts
-5) Weekly completion view
-6) PR tracking
-7) Bodyweight tracking
-8) Workout and exercise notes
-9) Duplicate last week’s workout
-
-Data model:
-- Template, TemplateExercise, TemplateSet
-- WorkoutSession, SessionExercise, SessionSet
-- PRRecord
-- BodyweightEntry
-Include createdAt/updatedAt and relational integrity.
-
-UX requirements:
-- Mobile-first UI with >=44px tap targets on logging interactions
-- Sticky bottom action bar on active workout screen
-- One-tap set completion
-- Quick +/- controls for reps and load
-- Minimal typing while logging
-- Clear contrast and concise metric cards
-
-Pages/routes required:
-- / dashboard
+Routes to build in prototype:
+- /
 - /templates
 - /templates/:id
 - /log/start
@@ -271,24 +352,38 @@ Pages/routes required:
 - /prs
 - /bodyweight
 
-Behavior requirements:
-- Autosave workout changes immediately (debounced acceptable)
-- Snapshot template into session when starting workout
-- PR detection (best load, estimated 1RM, and volume PR)
-- Weekly completion metrics from planned vs completed sessions
-- “Duplicate last week” action that copies prior week templates/sessions into current week plan
+Frontend-only prototype requirements:
+- Use realistic mock data in a single source file
+- Full clickable navigation between all pages
+- Mobile-first layout and >=44px tap targets on logger controls
+- Sticky bottom action bar on active workout page
+- One-tap set completion and +/- steppers for reps/load
+- Notes fields for workout + exercise
+- Mock charts for progress and bodyweight
+- Weekly completion card and “Duplicate last week” button (UI + mocked behavior)
+- Empty/loading/error visual states
 
-Implementation quality bar:
-- Strict TypeScript types
-- Server actions or API routes with validation
-- Error/empty/loading states on all data screens
-- Seed script with realistic sample data
-- Unit tests for PR calculation and weekly completion logic
-- Basic E2E test for creating template -> logging workout -> seeing PR
+Second pass requirements (after prototype):
+- Implement DB schema with tables:
+  workout_templates, template_exercises, template_sets,
+  workout_sessions, session_exercises, session_sets,
+  pr_records, bodyweight_entries
+- Snapshot template -> session on workout start
+- Autosave session updates
+- PR detection: max load, est1RM, session volume
+- Weekly completion calculation
 
-Output expectations:
+Quality bar:
+- Strict TypeScript typing
+- Reusable UI components
+- Clean folder structure by feature
+- README with setup and run steps
+- Seeded demo data
+- Unit tests for PR + weekly completion logic
+- Basic E2E happy path test
+
+Output format:
 - Provide complete runnable code
-- Include README with setup/run instructions
-- Include npm scripts for dev, build, test, db:migrate, db:seed
-- Explain architecture decisions briefly
+- Explain architecture briefly
+- List what is prototype-only vs fully wired
 ```
